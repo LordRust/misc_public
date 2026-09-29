@@ -1,0 +1,6 @@
+pyyaml==6.0.1
+requests==2.32.4
+requests
+click
+numpy
+pytest
