@@ -138,6 +138,44 @@ def test_cache_round_trip_and_gzip_pair_export(tmp_path: Path):
     assert rows[1]["D"] == "1"
 
 
+def test_pseudonymized_profiles_are_consecutive_and_used_by_cache(tmp_path: Path):
+    input_path = write_profiles(
+        tmp_path / "duplicates.tsv",
+        "#ID\tST\tl1\noriginal\t1\t10\noriginal\t2\t11\nthird\t3\t12\n",
+    )
+    cache_path = tmp_path / "profiles.npz"
+    assert (
+        cg.main(
+            [
+                "compute",
+                str(input_path),
+                "--metadata-column",
+                "ST",
+                "--cache",
+                str(cache_path),
+                "--pseudonym-prefix",
+                "isolate",
+            ]
+        )
+        == 0
+    )
+    pseudonymized = tmp_path / "profiles.pseudonymized.tsv"
+    with pseudonymized.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle, delimiter="\t"))
+    assert rows[0] == ["#ID", "ST", "l1"]
+    assert [row[0] for row in rows[1:]] == [
+        "isolate-0001",
+        "isolate-0002",
+        "isolate-0003",
+    ]
+    assert [row[1:] for row in rows[1:]] == [["1", "10"], ["2", "11"], ["3", "12"]]
+    assert cg.load_cache(cache_path).names.tolist() == [
+        "isolate-0001",
+        "isolate-0002",
+        "isolate-0003",
+    ]
+
+
 def test_full_cli_analysis_outputs_and_bounded_witnesses(tmp_path: Path):
     input_path = write_profiles(
         tmp_path / "profiles.tsv",

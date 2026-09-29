@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
@@ -270,6 +270,17 @@ def calculate_pairwise(profiles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             called & (others != profiles[left]), axis=1
         )
     return distances, comparable
+
+
+def pseudonymize_profiles(data: ProfileData, prefix: str = "sample") -> ProfileData:
+    """Return profile data with stable consecutive row-order identifiers."""
+
+    width = max(4, len(str(len(data.names))))
+    names = np.asarray(
+        [f"{prefix}-{index:0{width}d}" for index in range(1, len(data.names) + 1)],
+        dtype=np.str_,
+    )
+    return replace(data, names=names)
 
 
 def _atomic_target(path: Path) -> Path:
@@ -697,7 +708,7 @@ def _format_path(cache: PairwiseCache, path: Sequence[int]) -> tuple[str, str]:
 
 
 def write_profile_subset(
-    path: Path, cache: PairwiseCache, members: Sequence[int]
+    path: Path, cache: ProfileData, members: Sequence[int]
 ) -> None:
     temp_path = _atomic_target(path)
     try:
@@ -1203,6 +1214,10 @@ def command_compute(args: argparse.Namespace) -> None:
         outputs.append(args.pairs)
     metrics_path = Path(str(args.cache) + ".metrics.csv")
     outputs.append(metrics_path)
+    pseudonymized_path = args.pseudonymized_output or args.cache.with_name(
+        f"{args.cache.stem}.pseudonymized.tsv"
+    )
+    outputs.append(pseudonymized_path)
     if args.input.resolve() in {path.resolve() for path in outputs}:
         raise UserError("an output path cannot replace the input profile file")
     ensure_writable(outputs, args.force)
@@ -1210,6 +1225,13 @@ def command_compute(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     profiles = read_profiles(args.input, args.metadata_column)
     metrics.append(metric("input_encoding", started))
+
+    profiles = pseudonymize_profiles(profiles, prefix=args.pseudonym_prefix)
+    started = time.perf_counter()
+    write_profile_subset(
+        pseudonymized_path, profiles, tuple(range(len(profiles.names)))
+    )
+    metrics.append(metric("pseudonymized_profile_writing", started))
 
     started = time.perf_counter()
     distances, comparable = calculate_pairwise(profiles.profiles)
@@ -1227,6 +1249,7 @@ def command_compute(args: argparse.Namespace) -> None:
         metrics.append(metric("pair_csv_writing", started))
     write_metrics(metrics_path, metrics)
     print(f"Wrote cache: {args.cache}")
+    print(f"Wrote pseudonymized profiles: {pseudonymized_path}")
     if args.pairs is not None:
         print(f"Wrote pair table: {args.pairs}")
     print(f"Wrote metrics: {metrics_path}")
@@ -1332,6 +1355,16 @@ Repeated sample identifiers receive collision-safe -2, -3, ... suffixes.
     compute.add_argument(
         "--pairs", type=Path, help="optional complete .csv or .csv.gz pair table"
     )
+    compute.add_argument(
+        "--pseudonymized-output",
+        type=Path,
+        help="output profile copy (default: CACHE_STEM.pseudonymized.tsv)",
+    )
+    compute.add_argument(
+        "--pseudonym-prefix",
+        default="sample",
+        help="prefix for consecutive identifiers (default: sample)",
+    )
     compute.add_argument("--force", action="store_true", help="overwrite outputs")
     compute.set_defaults(func=command_compute)
 
@@ -1371,6 +1404,12 @@ def validate_args(args: argparse.Namespace) -> None:
             args.pairs.name.endswith(".csv") or args.pairs.name.endswith(".csv.gz")
         ):
             raise UserError("--pairs must end in .csv or .csv.gz")
+        if (
+            not args.pseudonym_prefix
+            or any(character.isspace() for character in args.pseudonym_prefix)
+            or args.pseudonym_prefix == MISSING
+        ):
+            raise UserError("--pseudonym-prefix must be non-empty and contain no whitespace")
     else:
         if args.min_comparable_loci is not None and args.min_comparable_loci < 1:
             raise UserError("--min-comparable-loci must be at least 1")
